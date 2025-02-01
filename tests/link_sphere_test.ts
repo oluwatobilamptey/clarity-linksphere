@@ -8,14 +8,15 @@ import {
 import { assertEquals } from 'https://deno.land/std@0.90.0/testing/asserts.ts';
 
 Clarinet.test({
-  name: "Can create and update profile",
+  name: "Can create and update profile with visibility",
   async fn(chain: Chain, accounts: Map<string, Account>) {
     const wallet1 = accounts.get('wallet_1')!;
     
     let block = chain.mineBlock([
       Tx.contractCall('link_sphere', 'create-profile', [
         types.ascii("Alice"),
-        types.utf8("Blockchain enthusiast")
+        types.utf8("Blockchain enthusiast"),
+        types.ascii("public")
       ], wallet1.address),
     ]);
     block.receipts[0].result.expectOk();
@@ -30,81 +31,94 @@ Clarinet.test({
     
     let profile = getProfile.result.expectOk().expectSome();
     assertEquals(profile['name'], "Alice");
+    assertEquals(profile['visibility'], "public");
   }
 });
 
 Clarinet.test({
-  name: "Can send and accept connection requests",
+  name: "Can create and join groups",
   async fn(chain: Chain, accounts: Map<string, Account>) {
     const wallet1 = accounts.get('wallet_1')!;
     const wallet2 = accounts.get('wallet_2')!;
     
     let block = chain.mineBlock([
-      // Create profiles
-      Tx.contractCall('link_sphere', 'create-profile', [
-        types.ascii("Alice"),
-        types.utf8("User 1")
+      Tx.contractCall('link_sphere', 'create-group', [
+        types.ascii("BlockchainDevs"),
+        types.utf8("A group for blockchain developers")
       ], wallet1.address),
-      Tx.contractCall('link_sphere', 'create-profile', [
-        types.ascii("Bob"),
-        types.utf8("User 2")
-      ], wallet2.address),
       
-      // Send connection request
-      Tx.contractCall('link_sphere', 'send-connection-request', [
-        types.principal(wallet2.address)
-      ], wallet1.address),
+      Tx.contractCall('link_sphere', 'join-group', [
+        types.principal(wallet1.address),
+        types.ascii("BlockchainDevs")
+      ], wallet2.address),
     ]);
     
     block.receipts.forEach(receipt => {
       receipt.result.expectOk();
     });
 
-    // Accept connection request
-    let acceptBlock = chain.mineBlock([
-      Tx.contractCall('link_sphere', 'accept-connection', [
-        types.principal(wallet1.address)
-      ], wallet2.address),
-    ]);
-    
-    acceptBlock.receipts[0].result.expectOk();
-
-    // Verify connection status
-    let getStatus = chain.callReadOnlyFn(
+    // Verify group membership
+    let checkMembership = chain.callReadOnlyFn(
       'link_sphere',
-      'get-connection-status',
-      [types.principal(wallet1.address), types.principal(wallet2.address)],
+      'is-group-member',
+      [
+        types.principal(wallet1.address),
+        types.ascii("BlockchainDevs"),
+        types.principal(wallet2.address)
+      ],
       wallet1.address
     );
     
-    let status = getStatus.result.expectOk();
-    assertEquals(status['forward'].value['status'], "connected");
+    checkMembership.result.expectOk().expectSome();
+
+    // Verify group details
+    let getGroup = chain.callReadOnlyFn(
+      'link_sphere',
+      'get-group',
+      [
+        types.principal(wallet1.address),
+        types.ascii("BlockchainDevs")
+      ],
+      wallet1.address
+    );
+    
+    let group = getGroup.result.expectOk().expectSome();
+    assertEquals(group['member-count'], 2);
   }
 });
 
 Clarinet.test({
-  name: "Can block users",
+  name: "Private profiles are only visible to owner",
   async fn(chain: Chain, accounts: Map<string, Account>) {
     const wallet1 = accounts.get('wallet_1')!;
     const wallet2 = accounts.get('wallet_2')!;
     
     let block = chain.mineBlock([
-      Tx.contractCall('link_sphere', 'block-user', [
-        types.principal(wallet2.address)
+      Tx.contractCall('link_sphere', 'create-profile', [
+        types.ascii("Alice"),
+        types.utf8("Private profile"),
+        types.ascii("private")
       ], wallet1.address),
     ]);
     
     block.receipts[0].result.expectOk();
 
-    // Verify blocked status
-    let getStatus = chain.callReadOnlyFn(
+    // Owner can view profile
+    let ownerView = chain.callReadOnlyFn(
       'link_sphere',
-      'get-connection-status',
-      [types.principal(wallet1.address), types.principal(wallet2.address)],
+      'get-profile',
+      [types.principal(wallet1.address)],
       wallet1.address
     );
-    
-    let status = getStatus.result.expectOk();
-    assertEquals(status['forward'].value['status'], "blocked");
+    ownerView.result.expectOk().expectSome();
+
+    // Other users cannot view private profile
+    let otherView = chain.callReadOnlyFn(
+      'link_sphere',
+      'get-profile',
+      [types.principal(wallet1.address)],
+      wallet2.address
+    );
+    otherView.result.expectErr(401);
   }
 });
