@@ -1,7 +1,5 @@
-[Previous test content remains unchanged...]
-
 Clarinet.test({
-  name: "Blocking user properly handles existing connections",
+  name: "Blocking user properly handles existing connections and validates operations",
   async fn(chain: Chain, accounts: Map<string, Account>) {
     const wallet1 = accounts.get('wallet_1')!;
     const wallet2 = accounts.get('wallet_2')!;
@@ -26,8 +24,8 @@ Clarinet.test({
       receipt.result.expectOk();
     });
 
-    // Verify blocked status
-    let connectionStatus = chain.callReadOnlyFn(
+    // Verify blocked status in both directions
+    let forwardStatus = chain.callReadOnlyFn(
       'link_sphere',
       'get-connection-status',
       [
@@ -37,7 +35,35 @@ Clarinet.test({
       wallet1.address
     );
     
-    let status = connectionStatus.result.expectOk();
-    assertEquals(status['forward'].value['status'], "blocked");
+    let reverseStatus = chain.callReadOnlyFn(
+      'link_sphere',
+      'get-connection-status',
+      [
+        types.principal(wallet2.address),
+        types.principal(wallet1.address)
+      ],
+      wallet1.address
+    );
+    
+    assertEquals(forwardStatus.result.expectOk().value['status'], "blocked");
+    assertEquals(reverseStatus.result.expectOk().value['status'], "blocked");
+
+    // Verify self-blocking prevention
+    let selfBlock = chain.mineBlock([
+      Tx.contractCall('link_sphere', 'block-user', [
+        types.principal(wallet1.address)
+      ], wallet1.address),
+    ]);
+
+    selfBlock.receipts[0].result.expectErr(422); // ERR-SELF-OPERATION
+
+    // Verify double-blocking prevention
+    let doubleBlock = chain.mineBlock([
+      Tx.contractCall('link_sphere', 'block-user', [
+        types.principal(wallet2.address)
+      ], wallet1.address),
+    ]);
+
+    doubleBlock.receipts[0].result.expectErr(423); // ERR-ALREADY-BLOCKED
   }
 });
